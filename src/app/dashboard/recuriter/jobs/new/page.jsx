@@ -167,15 +167,7 @@ export default function PostJobPage() {
         redirect('/dashboard/recuriter/jobs')
     }
 
-    // try {
-    //   console.log("Submitting Job Payload:", jobData);
-    //   await new Promise((r) => setTimeout(r, 1500));
-    //   alert("Job posted successfully and is now publicly visible!");
-    // } catch (error) {
-    //   console.error("Failed to post job:", error);
-    // } finally {
-    //   setIsSubmitting(false);
-    // }
+    
   };
 
   return (
