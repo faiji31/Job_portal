@@ -17,14 +17,19 @@ import {
   Chip,
 } from "@heroui/react";
 import {
- Factory,
+  Factory,
   Globe,
   Persons,
   Pin,
   ArrowUpFromLine,
   Pencil,
   CircleCheck,
+  TrashBin,
 } from "@gravity-ui/icons";
+import toast from "react-hot-toast";
+import { createCompany } from "@/lib/actions/companies";
+
+/* ----------------------------- constants ----------------------------- */
 
 const INDUSTRY_OPTIONS = [
   { key: "Technology", label: "Technology" },
@@ -42,18 +47,51 @@ const EMPLOYEE_RANGES = [
   { key: "500+ employees", label: "500+ employees" },
 ];
 
-// ImgBB upload (needs NEXT_PUBLIC_IMGBB_KEY in .env.local)
+const STATUS_META = {
+  Approved: {
+    color: "success",
+    note: "Your company is verified. You can post jobs.",
+  },
+  Pending: {
+    color: "warning",
+    note: "We're reviewing your profile. You can post jobs once it's approved.",
+  },
+  Rejected: {
+    color: "danger",
+    note: "Your profile was rejected. Update the details and save again.",
+  },
+};
+
+const DESCRIPTION_LIMIT = 500;
+const MAX_LOGO_SIZE = 5 * 1024 * 1024;
+
+const EMPTY_FORM = {
+  name: "",
+  industry: "Technology",
+  website: "",
+  location: "",
+  employeeCount: "1-10 employees",
+  logo: "",
+  description: "",
+};
+
+/* ------------------------------ helpers ------------------------------ */
+
+// ImgBB upload (needs NEXT_PUBLIC_IMAGE_API in .env.local)
 async function uploadToImgBB(file) {
   const body = new FormData();
   body.append("image", file);
   const res = await fetch(
-    `https://api.imgbb.com/1/upload?key=${process.env.NEXT_PUBLIC_IMGBB_KEY}`,
+    `https://api.imgbb.com/1/upload?key=${process.env.NEXT_PUBLIC_IMAGE_API}`,
     { method: "POST", body }
   );
   const data = await res.json();
   if (!data.success) throw new Error("ImgBB upload failed");
   return data.data.url;
 }
+
+const toHref = (url) =>
+  url ? (url.startsWith("http") ? url : `https://${url}`) : undefined;
 
 // Reusable select for HeroUI v3
 function AppSelect({ label, items, value, onChange, name, isRequired, placeholder = "Select" }) {
@@ -84,28 +122,55 @@ function AppSelect({ label, items, value, onChange, name, isRequired, placeholde
   );
 }
 
+// A titled block inside the form, so the long form reads as clear sections
+function FormSection({ title, description, children }) {
+  return (
+    <section className="grid grid-cols-1 gap-x-8 gap-y-4 py-6 first:pt-0 last:pb-0 md:grid-cols-[220px_1fr]">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted">{description}</p>
+      </div>
+      <div className="space-y-4">{children}</div>
+    </section>
+  );
+}
+
+// One fact in the profile view
+function InfoTile({ icon: Icon, label, children }) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-border bg-default/30 p-4">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+        <Icon className="h-5 w-5" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-xs text-muted">{label}</p>
+        <div className="truncate text-sm font-medium text-foreground">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ component ----------------------------- */
+
 export default function CompanyManagementView({ initialCompanyData = null }) {
   const [company, setCompany] = useState(initialCompanyData);
   const [isEditing, setIsEditing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [formData, setFormData] = useState(EMPTY_FORM);
 
-  const [formData, setFormData] = useState({
-    name: "",
-    industry: "Technology",
-    website: "",
-    location: "",
-    employeeCount: "1-10 employees",
-    logo: "",
-    description: "",
-  });
+  const setField = (key) => (value) => setFormData((prev) => ({ ...prev, [key]: value }));
+  const onInput = (key) => (e) => setField(key)(e.target.value);
 
   const handleLogoUpload = async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
     if (!file) return;
 
-    if (file.size > 5 * 1024 * 1024) {
-      alert("Max file size is 5MB.");
+    setUploadError("");
+    if (file.size > MAX_LOGO_SIZE) {
+      setUploadError("Logo is larger than 5MB. Choose a smaller image.");
       return;
     }
 
@@ -115,107 +180,142 @@ export default function CompanyManagementView({ initialCompanyData = null }) {
       setFormData((prev) => ({ ...prev, logo: uploadedUrl }));
     } catch (err) {
       console.error(err);
-      alert("Image upload failed. Please try again.");
+      setUploadError("Upload failed. Check your connection and try again.");
     } finally {
       setIsUploading(false);
     }
   };
 
+  // Only opens the form. No API call here.
   const handleOpenEdit = () => {
-    if (company) {
-      setFormData({
-        name: company.name || "",
-        industry: company.industry || "Technology",
-        website: company.website || "",
-        location: company.location || "",
-        employeeCount: company.employeeCount || "1-10 employees",
-        logo: company.logo || "",
-        description: company.description || "",
-      });
-    }
+    setFormData(
+      company
+        ? {
+            name: company.name || "",
+            industry: company.industry || "Technology",
+            website: company.website || "",
+            location: company.location || "",
+            employeeCount: company.employeeCount || "1-10 employees",
+            logo: company.logo || "",
+            description: company.description || "",
+          }
+        : EMPTY_FORM
+    );
+    setUploadError("");
     setIsEditing(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
+
     try {
-      // TODO: replace with your real API call
-      const savedCompany = {
+      const payload = {
         ...formData,
         status: company?.status || "Pending",
       };
-      setCompany(savedCompany);
+
+      const isUpdate = Boolean(company?._id);
+
+      // shudhu createCompany use hocche
+      const result = await createCompany(isUpdate ? { ...payload, _id: company._id } : payload);
+
+      console.log("API result:", result);
+
+      if (!result || result.success === false || result.error) {
+        throw new Error(result?.message || result?.error || "Failed to save company");
+      }
+
+      // create hole insertedId ashbe; backend { data: {...} } dile seta nao
+      const savedId =
+        result.insertedId || result.data?._id || result.company?._id || company?._id;
+
+      if (!isUpdate && !savedId) {
+        throw new Error("Server did not return the new company id");
+      }
+
+      setCompany({ ...payload, _id: savedId });
       setIsEditing(false);
+      toast.success(isUpdate ? "Company updated successfully!" : "Company registered successfully!");
     } catch (error) {
       console.error("Error saving company:", error);
+      toast.error(error.message || "Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const getStatusChip = (status = "Pending") => {
-    const statusMap = {
-      Approved: "success",
-      Pending: "warning",
-      Rejected: "danger",
-    };
-    return (
-      <Chip color={statusMap[status] || "default"} variant="soft" className="capitalize font-medium">
-        {status}
-      </Chip>
-    );
-  };
-
-  // --- SCENARIO 1: NO COMPANY REGISTERED / EDITING MODE ---
+  /* ------------- SCENARIO 1: NO COMPANY YET / EDITING MODE ------------- */
   if (!company || isEditing) {
     return (
-      <Form onSubmit={handleSubmit} className="space-y-6 max-w-4xl mx-auto p-6">
-        <Card className="w-full">
-          <Card.Header className="flex-row items-center gap-3">
-            <Factory className="w-5 h-5 text-accent" />
-            <div className="flex flex-col">
-              <Card.Title>{isEditing ? "Edit Company Profile" : "Register New Company"}</Card.Title>
-              <Card.Description>
-                Enter your business details to start hiring on HireLoop.
-              </Card.Description>
-            </div>
-          </Card.Header>
+      <Form onSubmit={handleSubmit} className="mx-auto max-w-4xl space-y-6 p-6">
+        <div className="flex items-center gap-4">
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-accent text-accent-foreground">
+            <Factory className="h-6 w-6" />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">
+              {isEditing ? "Edit company profile" : "Register your company"}
+            </h1>
+            <p className="text-sm text-muted">
+              Candidates see these details on every job you post.
+            </p>
+          </div>
+        </div>
 
-          <Card.Content className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="w-full">
+          <Card.Content className="divide-y divide-border">
+            <FormSection
+              title="Basic information"
+              description="The name and category people will find you by."
+            >
               <TextField isRequired name="name">
-                <Label>Company Name</Label>
+                <Label>Company name</Label>
                 <Input
                   variant="secondary"
                   placeholder="e.g. Acme Corp"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  onChange={onInput("name")}
                 />
               </TextField>
 
-              <AppSelect
-                isRequired
-                name="industry"
-                label="Industry / Category"
-                placeholder="Select industry"
-                items={INDUSTRY_OPTIONS}
-                value={formData.industry}
-                onChange={(val) => setFormData({ ...formData, industry: val })}
-              />
-            </div>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <AppSelect
+                  isRequired
+                  name="industry"
+                  label="Industry"
+                  placeholder="Select industry"
+                  items={INDUSTRY_OPTIONS}
+                  value={formData.industry}
+                  onChange={setField("industry")}
+                />
+                <AppSelect
+                  isRequired
+                  name="employeeCount"
+                  label="Company size"
+                  placeholder="Select size"
+                  items={EMPLOYEE_RANGES}
+                  value={formData.employeeCount}
+                  onChange={setField("employeeCount")}
+                />
+              </div>
+            </FormSection>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <FormSection
+              title="Online presence"
+              description="Where your company is based and where candidates can learn more."
+            >
               <TextField isRequired name="website">
-                <Label>Website URL</Label>
+                <Label>Website</Label>
                 <InputGroup variant="secondary">
                   <InputGroup.Prefix>
-                    <span className="text-muted text-xs">https://</span>
+                    <Globe className="h-4 w-4 text-muted" />
+                    <span className="text-xs text-muted">https://</span>
                   </InputGroup.Prefix>
                   <InputGroup.Input
                     placeholder="www.company.com"
                     value={formData.website}
-                    onChange={(e) => setFormData({ ...formData, website: e.target.value })}
+                    onChange={onInput("website")}
                   />
                 </InputGroup>
               </TextField>
@@ -224,164 +324,183 @@ export default function CompanyManagementView({ initialCompanyData = null }) {
                 <Label>Location</Label>
                 <InputGroup variant="secondary">
                   <InputGroup.Prefix>
-                    <Pin className="w-4 h-4 text-muted" />
+                    <Pin className="h-4 w-4 text-muted" />
                   </InputGroup.Prefix>
                   <InputGroup.Input
                     placeholder="City, Country"
                     value={formData.location}
-                    onChange={(e) => setFormData({ ...formData, location: e.target.value })}
+                    onChange={onInput("location")}
                   />
                 </InputGroup>
               </TextField>
-            </div>
+            </FormSection>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <AppSelect
-                isRequired
-                name="employeeCount"
-                label="Employee Count Range"
-                placeholder="Select employee range"
-                items={EMPLOYEE_RANGES}
-                value={formData.employeeCount}
-                onChange={(val) => setFormData({ ...formData, employeeCount: val })}
-              />
+            <FormSection
+              title="Logo"
+              description="A square image works best. PNG or JPG, up to 5MB."
+            >
+              <div className="flex items-center gap-4">
+                <label
+                  className={`relative flex h-24 w-24 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-border bg-default/40 transition-colors hover:bg-default/60 ${
+                    isUploading ? "pointer-events-none" : ""
+                  }`}
+                >
+                  {formData.logo ? (
+                    <img src={formData.logo} alt="Company logo" className="h-full w-full object-cover" />
+                  ) : (
+                    <ArrowUpFromLine className="h-6 w-6 text-muted" />
+                  )}
+                  {isUploading && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+                      <Spinner size="sm" />
+                    </div>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleLogoUpload}
+                    disabled={isUploading}
+                  />
+                </label>
 
-              {/* Logo Upload */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-sm font-medium">Company Logo</span>
-                <div className="flex items-center gap-3">
-                  <label className="relative flex flex-col items-center justify-center w-20 h-16 border-2 border-dashed border-border rounded-xl cursor-pointer bg-default/40 hover:bg-default/60 transition-all overflow-hidden">
-                    {formData.logo ? (
-                      <img src={formData.logo} alt="Logo" className="w-full h-full object-cover" />
-                    ) : (
-                      <ArrowUpFromLine className="w-5 h-5 text-muted" />
-                    )}
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleLogoUpload}
-                      disabled={isUploading}
-                    />
-                  </label>
-                  <div className="text-xs text-muted">
-                    <p className="font-semibold text-foreground">
-                      {isUploading ? "Uploading..." : "Upload image"}
-                    </p>
-                    <p>PNG, JPG up to 5MB</p>
-                  </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-foreground">
+                    {isUploading
+                      ? "Uploading..."
+                      : formData.logo
+                      ? "Click the logo to replace it"
+                      : "Click the box to upload a logo"}
+                  </p>
+                  {formData.logo && !isUploading && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger-soft"
+                      onPress={() => setFormData((prev) => ({ ...prev, logo: "" }))}
+                    >
+                      <TrashBin className="h-4 w-4" />
+                      Remove logo
+                    </Button>
+                  )}
+                  {uploadError && <p className="text-xs text-danger">{uploadError}</p>}
                 </div>
               </div>
-            </div>
+            </FormSection>
 
-            <TextField isRequired name="description">
-              <Label>Brief Description</Label>
-              <TextArea
-                variant="secondary"
-                rows={4}
-                placeholder="Tell us about your company's mission and culture..."
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-              />
-            </TextField>
+            <FormSection
+              title="About"
+              description="Describe what you do and what it's like to work with you."
+            >
+              <TextField isRequired name="description">
+                <Label>Description</Label>
+                <TextArea
+                  variant="secondary"
+                  rows={5}
+                  maxLength={DESCRIPTION_LIMIT}
+                  placeholder="Tell us about your company's mission and culture..."
+                  value={formData.description}
+                  onChange={onInput("description")}
+                />
+                <p className="mt-1 text-right text-xs text-muted">
+                  {formData.description.length}/{DESCRIPTION_LIMIT}
+                </p>
+              </TextField>
+            </FormSection>
           </Card.Content>
         </Card>
 
         {/* Actions */}
-        <div className="flex items-center justify-end gap-3 pt-2">
+        <div className="sticky bottom-4 z-10 flex items-center justify-end gap-3 rounded-2xl border border-border bg-background/90 p-3 backdrop-blur">
           {isEditing && (
-            <Button type="button" variant="danger-soft" onPress={() => setIsEditing(false)}>
+            <Button type="button" variant="secondary" onPress={() => setIsEditing(false)}>
               Cancel
             </Button>
           )}
           <Button type="submit" variant="primary" isPending={isSubmitting} isDisabled={isUploading}>
-            {isSubmitting ? <Spinner color="current" size="sm" /> : <CircleCheck className="w-4 h-4" />}
-            {isEditing ? "Update Company Profile" : "Register Company"}
+            {isSubmitting ? <Spinner color="current" size="sm" /> : <CircleCheck className="h-4 w-4" />}
+            {isEditing ? "Save changes" : "Register company"}
           </Button>
         </div>
       </Form>
     );
   }
 
-  // --- SCENARIO 2: COMPANY REGISTERED VIEW ---
-  const websiteHref = company.website
-    ? company.website.startsWith("http")
-      ? company.website
-      : `https://${company.website}`
-    : undefined;
+  /* ----------------- SCENARIO 2: COMPANY PROFILE VIEW ------------------ */
+  const websiteHref = toHref(company.website);
+  const status = STATUS_META[company.status] ? company.status : "Pending";
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-6">
-      <Card className="w-full">
-        <Card.Header className="flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-16 h-16 rounded-xl border border-border bg-default/40">
-              <Avatar.Image src={company.logo} alt={company.name} />
-              <Avatar.Fallback>
-                <Factory className="w-6 h-6 text-muted" />
-              </Avatar.Fallback>
-            </Avatar>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-3">
-                <Card.Title className="text-2xl">{company.name}</Card.Title>
-                {getStatusChip(company.status)}
+    <div className="mx-auto max-w-4xl space-y-6 p-6">
+      <Card className="w-full overflow-hidden p-0">
+        {/* Cover */}
+        <div className="h-32 bg-gradient-to-br from-accent/30 via-accent/10 to-transparent" />
+
+        <Card.Content className="space-y-8 px-6 pb-6 pt-0">
+          {/* Identity row: logo overlaps the cover */}
+          <div className="-mt-12 flex flex-wrap items-end justify-between gap-4">
+            <div className="flex items-end gap-4">
+              <Avatar className="h-24 w-24 rounded-2xl border-4 border-background bg-default shadow-sm">
+                <Avatar.Image src={company.logo} alt={company.name} />
+                <Avatar.Fallback>
+                  <Factory className="h-8 w-8 text-muted" />
+                </Avatar.Fallback>
+              </Avatar>
+              <div className="pb-1">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h1 className="text-2xl font-semibold text-foreground">{company.name}</h1>
+                  <Chip color={STATUS_META[status].color} variant="soft" className="font-medium">
+                    {status}
+                  </Chip>
+                </div>
+                <p className="text-sm text-muted">
+                  {[company.industry, company.location].filter(Boolean).join(", ")}
+                </p>
               </div>
-              <Card.Description>
-                {company.industry} • {company.location}
-              </Card.Description>
             </div>
+
+            <Button variant="secondary" onPress={handleOpenEdit}>
+              <Pencil className="h-4 w-4" />
+              Edit details
+            </Button>
           </div>
 
-          <Button variant="secondary" onPress={handleOpenEdit}>
-            <Pencil className="w-4 h-4" />
-            Edit Details
-          </Button>
-        </Card.Header>
+          {/* Status note */}
+          <p className="rounded-xl border border-border bg-default/30 px-4 py-3 text-sm text-foreground/80">
+            {STATUS_META[status].note}
+          </p>
 
-        <Card.Content className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="p-4 bg-default/40 border border-border rounded-xl flex items-center gap-3">
-              <Globe className="w-5 h-5 text-muted" />
-              <div className="truncate">
-                <p className="text-xs text-muted">Website</p>
-                {websiteHref ? (
-                  <a
-                    href={websiteHref}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-sm font-medium text-accent hover:underline truncate block"
-                  >
-                    {company.website}
-                  </a>
-                ) : (
-                  <p className="text-sm font-medium text-foreground">N/A</p>
-                )}
-              </div>
-            </div>
+          {/* Key facts */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <InfoTile icon={Globe} label="Website">
+              {websiteHref ? (
+                <a
+                  href={websiteHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  {company.website}
+                </a>
+              ) : (
+                "Not added"
+              )}
+            </InfoTile>
 
-            <div className="p-4 bg-default/40 border border-border rounded-xl flex items-center gap-3">
-              <Persons className="w-5 h-5 text-muted" />
-              <div>
-                <p className="text-xs text-muted">Company Size</p>
-                <p className="text-sm font-medium text-foreground">{company.employeeCount}</p>
-              </div>
-            </div>
+            <InfoTile icon={Persons} label="Company size">
+              {company.employeeCount || "Not added"}
+            </InfoTile>
 
-            <div className="p-4 bg-default/40 border border-border rounded-xl flex items-center gap-3">
-              <Pin className="w-5 h-5 text-muted" />
-              <div>
-                <p className="text-xs text-muted">Location</p>
-                <p className="text-sm font-medium text-foreground">{company.location || "N/A"}</p>
-              </div>
-            </div>
+            <InfoTile icon={Pin} label="Location">
+              {company.location || "Not added"}
+            </InfoTile>
           </div>
 
+          {/* About */}
           <div>
-            <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2">
-              About Company
-            </h4>
-            <p className="text-foreground/90 text-sm leading-relaxed whitespace-pre-line">
-              {company.description || "No description provided."}
+            <h2 className="mb-2 text-base font-semibold text-foreground">About {company.name}</h2>
+            <p className="max-w-prose whitespace-pre-line text-sm leading-relaxed text-foreground/80">
+              {company.description || "No description yet. Use Edit details to add one."}
             </p>
           </div>
         </Card.Content>
